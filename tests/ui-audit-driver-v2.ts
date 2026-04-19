@@ -29,6 +29,7 @@ const MODULES: Module[] = [
   { id: 'nodes', label: 'Nodes' },
   { id: 'chat', label: 'Chat' },
   { id: 'plan', label: 'Plan' },
+  { id: 'ops-chat', label: 'Operator Console' },
   { id: 'cost', label: 'Cost' },
   { id: 'pipelines', label: 'Pipelines' },
   { id: 'workloads', label: 'Workloads' },
