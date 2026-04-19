@@ -39,6 +39,9 @@ traces/
 *.swo
 *~
 
+# Claude Code (local overrides stay out of VCS; settings.json + commands/ are tracked)
+.claude/settings.local.json
+
 # OS
 .DS_Store
 Thumbs.db
