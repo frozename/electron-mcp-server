@@ -189,6 +189,22 @@ async function main(): Promise<void> {
       35_000,
     );
 
+    // Safety + post-mortem wiring BEFORE first interaction so every
+    // module's work is recorded.
+    await client.send(
+      'tools/call',
+      { name: 'electron_dialog_policy', arguments: { sessionId, policy: 'auto' } },
+      5_000,
+    );
+    await client.send(
+      'tools/call',
+      {
+        name: 'electron_trace_start',
+        arguments: { sessionId, title: 'ui-audit-v2', sources: false },
+      },
+      5_000,
+    );
+
     // Wait for first-render instead of sleeping.
     await client.send(
       'tools/call',
@@ -213,9 +229,13 @@ async function main(): Promise<void> {
       buttonCount: number;
       buttons: Array<{ name: string; disabled: boolean | undefined }>;
       roles: Record<string, number>;
+      consoleDelta: number;
+      networkDelta: number;
       screenshotPath: string;
     }
     const results: Result[] = [];
+    let priorConsoleSize = 0;
+    let priorNetworkSize = 0;
 
     for (const mod of MODULES) {
       const start = Date.now();
@@ -259,6 +279,29 @@ async function main(): Promise<void> {
         10_000,
       );
 
+      // Capture per-module deltas for the two ring buffers so flaky
+      // behavior (unexpected request spike, console error) is pinned to
+      // the module that triggered it.
+      const cRes = await client.send(
+        'tools/call',
+        { name: 'electron_console_tail', arguments: { sessionId, limit: 1 } },
+        5_000,
+      );
+      const cSize =
+        (parseEnvelope(cRes) as { bufferSize?: number })?.bufferSize ?? priorConsoleSize;
+      const consoleDelta = Math.max(0, cSize - priorConsoleSize);
+      priorConsoleSize = cSize;
+
+      const nRes = await client.send(
+        'tools/call',
+        { name: 'electron_network_tail', arguments: { sessionId, limit: 1 } },
+        5_000,
+      );
+      const nSize =
+        (parseEnvelope(nRes) as { bufferSize?: number })?.bufferSize ?? priorNetworkSize;
+      const networkDelta = Math.max(0, nSize - priorNetworkSize);
+      priorNetworkSize = nSize;
+
       results.push({
         module: mod.id,
         label: mod.label,
@@ -268,20 +311,55 @@ async function main(): Promise<void> {
         buttonCount: summary.buttons.length,
         buttons: summary.buttons,
         roles: summary.roles,
+        consoleDelta,
+        networkDelta,
         screenshotPath,
-        // Raw tree capped to first 4 KB for inspection — useful while
-        // we tune the CDP a11y pipeline.
-        treeDump: JSON.stringify(tree).slice(0, 4000),
       });
     }
 
-    // Drain any console output accumulated during the run.
+    // Drain console + network ring buffers into the final report so
+    // everything is one JSON file per run.
     const tail = await client.send(
       'tools/call',
-      { name: 'electron_console_tail', arguments: { sessionId, limit: 100, drain: true } },
+      { name: 'electron_console_tail', arguments: { sessionId, limit: 200, drain: true } },
       10_000,
     );
     const tailEnv = parseEnvelope(tail) as { entries?: unknown[]; bufferSize?: number; dropped?: number };
+
+    const netAll = await client.send(
+      'tools/call',
+      { name: 'electron_network_tail', arguments: { sessionId, limit: 500, drain: true } },
+      10_000,
+    );
+    const netEnv = parseEnvelope(netAll) as {
+      entries?: Array<{ method: string; url: string; status?: number; resourceType?: string }>;
+      dropped?: number;
+    };
+    const netEntries = netEnv?.entries ?? [];
+    const byStatus = netEntries.reduce<Record<string, number>>((acc, e) => {
+      const key = e.status !== undefined ? String(e.status) : 'pending';
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {});
+    const byResource = netEntries.reduce<Record<string, number>>((acc, e) => {
+      const key = e.resourceType ?? 'unknown';
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {});
+    const failures = netEntries.filter(
+      (e) => (e.status !== undefined && e.status >= 400),
+    );
+
+    // Stop tracing LAST so the trace captures every navigation and the
+    // ring-buffer drains. Writes a .zip that can be replayed in
+    // `playwright show-trace`.
+    const tracePath = `${OUT_DIR}/trace.zip`;
+    const traceRes = await client.send(
+      'tools/call',
+      { name: 'electron_trace_stop', arguments: { sessionId, path: tracePath } },
+      30_000,
+    );
+    const traceEnv = parseEnvelope(traceRes) as { path?: string; byteLength?: number };
 
     writeFileSync(
       `${OUT_DIR}/report.json`,
@@ -289,21 +367,33 @@ async function main(): Promise<void> {
         {
           runAt: new Date().toISOString(),
           executable: args.executable,
-          driver: 'v2-sprint1',
+          driver: 'v2-sprint1+3',
           modulesTested: results.length,
           totalMs: results.reduce((a, r) => a + r.durationMs, 0),
-          results,
+          trace: {
+            path: traceEnv?.path ?? tracePath,
+            byteLength: traceEnv?.byteLength ?? 0,
+          },
+          network: {
+            total: netEntries.length,
+            dropped: netEnv?.dropped ?? 0,
+            byStatus,
+            byResource,
+            failureCount: failures.length,
+            failures: failures.slice(0, 20),
+          },
           console: {
             dropped: tailEnv?.dropped ?? 0,
             count: (tailEnv?.entries ?? []).length,
             entries: tailEnv?.entries ?? [],
           },
+          results,
         },
         null,
         2,
       ),
     );
-    log(`wrote ${OUT_DIR}/report.json`);
+    log(`wrote ${OUT_DIR}/report.json + trace.zip (${traceEnv?.byteLength ?? 0} bytes)`);
 
     await client.send('tools/call', { name: 'electron_close', arguments: { sessionId } }, 10_000);
   } finally {
