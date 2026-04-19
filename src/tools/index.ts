@@ -1,19 +1,23 @@
 import { zodToJsonSchema } from '../utils/zod-to-json.js';
 
 import {
+  ElectronAccessibilitySnapshotInputSchema,
   ElectronCloseInputSchema,
+  ElectronConsoleTailInputSchema,
   ElectronFillInputSchema,
   ElectronFocusWindowInputSchema,
   ElectronLaunchInputSchema,
   ElectronListWindowsInputSchema,
   ElectronRestartInputSchema,
   ElectronScreenshotInputSchema,
+  ElectronWaitForSelectorInputSchema,
   ElectronWaitForWindowInputSchema,
   ElectronClickInputSchema,
   ElectronEvaluateMainInputSchema,
   ElectronEvaluateRendererInputSchema,
 } from '../schemas/index.js';
 
+import { electronConsoleTail } from './console.js';
 import {
   electronClose,
   electronLaunch,
@@ -22,10 +26,12 @@ import {
 } from './lifecycle.js';
 import { electronEvaluateMain } from './main.js';
 import {
+  electronAccessibilitySnapshot,
   electronClick,
   electronEvaluateRenderer,
   electronFill,
   electronScreenshot,
+  electronWaitForSelector,
 } from './renderer.js';
 import type { ToolContext, ToolHandler } from './types.js';
 import { electronFocusWindow, electronListWindows, electronWaitForWindow } from './windows.js';
@@ -126,6 +132,33 @@ export function buildToolRegistry(): ToolDefinition[] {
         'Capture a screenshot of a window. Saves to a path if provided, otherwise returns base64.',
       inputSchema: zodToJsonSchema(ElectronScreenshotInputSchema),
       handler: electronScreenshot as unknown as ToolHandler<unknown, unknown>,
+    },
+    {
+      name: 'electron_wait_for_selector',
+      description:
+        'Wait until an element matching a selector reaches a state (visible | hidden | attached | ' +
+        'detached). Replaces ad-hoc sleep loops. Returns {matched:true} on success, or throws a ' +
+        'SelectorError on timeout.',
+      inputSchema: zodToJsonSchema(ElectronWaitForSelectorInputSchema),
+      handler: electronWaitForSelector as unknown as ToolHandler<unknown, unknown>,
+    },
+    {
+      name: 'electron_accessibility_snapshot',
+      description:
+        'Return the accessibility tree for a window (or element rooted at a selector). ' +
+        'Compact text tree of roles/names/values — designed for LLM agents to reason about UI ' +
+        'state without screenshots. interestingOnly defaults to true (Playwright default).',
+      inputSchema: zodToJsonSchema(ElectronAccessibilitySnapshotInputSchema),
+      handler: electronAccessibilitySnapshot as unknown as ToolHandler<unknown, unknown>,
+    },
+    {
+      name: 'electron_console_tail',
+      description:
+        'Drain up to N recent entries from the session ring buffer of renderer console + page ' +
+        'errors. Optional level and regex pattern filters. Set drain:true to remove the returned ' +
+        'entries from the buffer so subsequent tails only see new messages.',
+      inputSchema: zodToJsonSchema(ElectronConsoleTailInputSchema),
+      handler: electronConsoleTail as unknown as ToolHandler<unknown, unknown>,
     },
 
     /* ---------------- Main process ---------------- */

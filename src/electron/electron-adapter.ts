@@ -287,6 +287,114 @@ export class ElectronAdapter {
     }
   }
 
+  async waitForSelector(
+    win: Page,
+    selector: string,
+    options: {
+      state: 'attached' | 'detached' | 'visible' | 'hidden';
+      timeoutMs: number;
+    },
+  ): Promise<boolean> {
+    try {
+      const handle = await win.waitForSelector(selector, {
+        state: options.state,
+        timeout: options.timeoutMs,
+      });
+      // For detached/hidden states Playwright resolves with null and throws on timeout.
+      // Convert to a boolean so callers can distinguish "matched" from "no element".
+      return handle !== null || options.state === 'detached' || options.state === 'hidden';
+    } catch (err) {
+      throw this.translateElementError(err, selector);
+    }
+  }
+
+  async accessibilitySnapshot(
+    win: Page,
+    options: {
+      interestingOnly: boolean;
+      root?: string;
+      timeoutMs: number;
+    },
+  ): Promise<unknown> {
+    // Playwright 1.54+ dropped `page.accessibility.snapshot()` from its public
+    // API. We go to CDP (`Accessibility.getFullAXTree`) instead — same
+    // underlying tree Chrome exposes, works identically in Electron.
+    try {
+      const client = await win.context().newCDPSession(win);
+      try {
+        await client.send('Accessibility.enable');
+
+        type AXValue = { value?: unknown; type?: string };
+        interface AXPropertyValue { name: string; value?: AXValue }
+        interface AXNodeRaw {
+          nodeId: string;
+          parentId?: string;
+          role?: AXValue;
+          name?: AXValue;
+          value?: AXValue;
+          description?: AXValue;
+          properties?: AXPropertyValue[];
+          childIds?: string[];
+          ignored?: boolean;
+        }
+
+        let raw: { nodes: AXNodeRaw[] };
+        if (options.root) {
+          // Wait for the selector to exist in the DOM first, then resolve it
+          // to a CDP objectId via Runtime.evaluate. Avoids depending on any
+          // Playwright internal ElementHandle shape.
+          await win.waitForSelector(options.root, {
+            state: 'attached',
+            timeout: options.timeoutMs,
+          });
+          const evaluated = (await client.send('Runtime.evaluate', {
+            expression: `document.querySelector(${JSON.stringify(options.root)})`,
+            returnByValue: false,
+            includeCommandLineAPI: false,
+          })) as { result?: { objectId?: string; subtype?: string } };
+          const objectId = evaluated.result?.objectId;
+          if (!objectId || evaluated.result?.subtype === 'null') {
+            throw new SelectorError(options.root, 'root not found');
+          }
+          const described = (await client.send('DOM.describeNode', {
+            objectId,
+          })) as { node?: { backendNodeId?: number } };
+          const backendNodeId = described.node?.backendNodeId;
+          if (backendNodeId === undefined) {
+            throw new SelectorError(options.root, 'could not resolve backendNodeId');
+          }
+          raw = (await withTimeout(
+            client.send('Accessibility.getPartialAXTree', {
+              backendNodeId,
+              fetchRelatives: true,
+            }),
+            options.timeoutMs,
+            'cdp.accessibility.getPartialAXTree',
+          )) as { nodes: AXNodeRaw[] };
+        } else {
+          raw = (await withTimeout(
+            client.send('Accessibility.getFullAXTree', {}),
+            options.timeoutMs,
+            'cdp.accessibility.getFullAXTree',
+          )) as { nodes: AXNodeRaw[] };
+        }
+
+        return axTreeToSnapshot(raw.nodes, { interestingOnly: options.interestingOnly });
+      } finally {
+        try {
+          await client.detach();
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch (err) {
+      if (err instanceof SelectorError) throw err;
+      throw new EvaluationError(
+        `Accessibility snapshot failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   async evaluateRenderer(
     win: Page,
     expression: string,
@@ -380,6 +488,123 @@ function safeRegex(input: string): RegExp | null {
   } catch {
     return null;
   }
+}
+
+interface AXSnapshotValue { value?: unknown; type?: string }
+interface AXSnapshotProperty { name: string; value?: AXSnapshotValue }
+interface AXSnapshotNodeRaw {
+  nodeId: string;
+  parentId?: string;
+  role?: AXSnapshotValue;
+  name?: AXSnapshotValue;
+  value?: AXSnapshotValue;
+  description?: AXSnapshotValue;
+  properties?: AXSnapshotProperty[];
+  childIds?: string[];
+  ignored?: boolean;
+}
+
+interface AXSnapshotOut {
+  role: string;
+  name?: string;
+  value?: string | number;
+  description?: string;
+  checked?: boolean | 'mixed';
+  selected?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  focused?: boolean;
+  level?: number;
+  children?: AXSnapshotOut[];
+}
+
+function valueOf(v: AXSnapshotValue | undefined): unknown {
+  return v?.value;
+}
+
+function axTreeToSnapshot(
+  nodes: AXSnapshotNodeRaw[],
+  options: { interestingOnly: boolean },
+): AXSnapshotOut | null {
+  const byId = new Map<string, AXSnapshotNodeRaw>();
+  for (const n of nodes) byId.set(n.nodeId, n);
+
+  // Pick the root: prefer a node with no parentId, else the first.
+  const root = nodes.find((n) => !n.parentId) ?? nodes[0];
+  if (!root) return null;
+
+  const convert = (n: AXSnapshotNodeRaw): AXSnapshotOut | null => {
+    const roleRaw = valueOf(n.role);
+    const role = typeof roleRaw === 'string' ? roleRaw : '';
+
+    // Drop "InlineTextBox", "none" and ignored nodes under interestingOnly.
+    if (options.interestingOnly) {
+      if (n.ignored) return collapse(n);
+      if (role === '' || role === 'none' || role === 'presentation' || role === 'InlineTextBox') {
+        return collapse(n);
+      }
+    }
+
+    const out: AXSnapshotOut = { role };
+    const name = valueOf(n.name);
+    if (typeof name === 'string' && name.length > 0) out.name = name;
+    const value = valueOf(n.value);
+    if (typeof value === 'string' || typeof value === 'number') out.value = value;
+    const desc = valueOf(n.description);
+    if (typeof desc === 'string' && desc.length > 0) out.description = desc;
+
+    for (const prop of n.properties ?? []) {
+      const v = valueOf(prop.value);
+      switch (prop.name) {
+        case 'checked':
+          if (v === 'mixed') out.checked = 'mixed';
+          else if (typeof v === 'boolean') out.checked = v;
+          break;
+        case 'selected':
+          if (typeof v === 'boolean') out.selected = v;
+          break;
+        case 'disabled':
+          if (typeof v === 'boolean') out.disabled = v;
+          break;
+        case 'expanded':
+          if (typeof v === 'boolean') out.expanded = v;
+          break;
+        case 'focused':
+          if (typeof v === 'boolean') out.focused = v;
+          break;
+        case 'level':
+          if (typeof v === 'number') out.level = v;
+          break;
+      }
+    }
+
+    const kids: AXSnapshotOut[] = [];
+    for (const childId of n.childIds ?? []) {
+      const child = byId.get(childId);
+      if (!child) continue;
+      const rendered = convert(child);
+      if (Array.isArray(rendered)) kids.push(...rendered);
+      else if (rendered) kids.push(rendered);
+    }
+    if (kids.length > 0) out.children = kids;
+    return out;
+  };
+
+  const collapse = (n: AXSnapshotNodeRaw): AXSnapshotOut | null => {
+    const kids: AXSnapshotOut[] = [];
+    for (const childId of n.childIds ?? []) {
+      const child = byId.get(childId);
+      if (!child) continue;
+      const rendered = convert(child);
+      if (rendered) kids.push(rendered);
+    }
+    if (kids.length === 0) return null;
+    if (kids.length === 1) return kids[0]!;
+    // Fold multiple children into a synthetic "group" so we don't lose them.
+    return { role: 'group', children: kids };
+  };
+
+  return convert(root);
 }
 
 function describePredicate(p: {

@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
+  ElectronAccessibilitySnapshotInputSchema,
   ElectronClickInputSchema,
+  ElectronConsoleTailInputSchema,
   ElectronLaunchInputSchema,
+  ElectronWaitForSelectorInputSchema,
   ElectronWaitForWindowInputSchema,
 } from '../src/schemas/index.js';
 
@@ -42,5 +45,48 @@ describe('ElectronWaitForWindowInputSchema', () => {
       urlPattern: '/login',
     });
     expect(parsed.urlPattern).toBe('/login');
+  });
+});
+
+describe('ElectronWaitForSelectorInputSchema', () => {
+  test('defaults state to visible', () => {
+    const parsed = ElectronWaitForSelectorInputSchema.parse({
+      sessionId: 'sess_1',
+      selector: '#login',
+    });
+    expect(parsed.state).toBe('visible');
+  });
+
+  test('rejects unknown state', () => {
+    expect(() =>
+      ElectronWaitForSelectorInputSchema.parse({
+        sessionId: 'sess_1',
+        selector: '#x',
+        state: 'enabled',
+      }),
+    ).toThrow();
+  });
+});
+
+describe('ElectronAccessibilitySnapshotInputSchema', () => {
+  test('defaults interestingOnly to true', () => {
+    const parsed = ElectronAccessibilitySnapshotInputSchema.parse({
+      sessionId: 'sess_1',
+    });
+    expect(parsed.interestingOnly).toBe(true);
+  });
+});
+
+describe('ElectronConsoleTailInputSchema', () => {
+  test('defaults limit and drain', () => {
+    const parsed = ElectronConsoleTailInputSchema.parse({ sessionId: 'sess_1' });
+    expect(parsed.limit).toBe(100);
+    expect(parsed.drain).toBe(false);
+  });
+
+  test('limits reject over-sized requests', () => {
+    expect(() =>
+      ElectronConsoleTailInputSchema.parse({ sessionId: 'sess_1', limit: 99999 }),
+    ).toThrow();
   });
 });

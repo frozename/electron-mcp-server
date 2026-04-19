@@ -4,6 +4,7 @@ import { PermissionDeniedError, SessionNotFoundError } from '../errors/index.js'
 import type { Logger } from '../logging/logger.js';
 import { newSessionId } from '../utils/ids.js';
 
+import { createConsoleBuffer, instrumentSession } from './console-buffer.js';
 import type { Session, SessionSnapshot, SessionStatus } from './types.js';
 import { serializeSession } from './types.js';
 
@@ -52,8 +53,11 @@ export class SessionManager {
       startedAt: now,
       lastUsedAt: now,
       lastKnownWindowCount: input.app.windows().length,
+      consoleBuffer: createConsoleBuffer(),
     };
     this.sessions.set(id, session);
+
+    instrumentSession(session);
 
     input.app.on('close', () => {
       const current = this.sessions.get(id);

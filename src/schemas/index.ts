@@ -216,6 +216,149 @@ export const ElectronScreenshotOutputSchema = z.object({
 export type ElectronScreenshotOutput = z.infer<typeof ElectronScreenshotOutputSchema>;
 
 /* ------------------------------------------------------------------ */
+/* Wait for selector                                                   */
+/* ------------------------------------------------------------------ */
+
+export const WaitForSelectorStateSchema = z
+  .enum(['attached', 'detached', 'visible', 'hidden'])
+  .describe(
+    'attached: element is in DOM. detached: element leaves DOM. visible: rendered & non-empty box. hidden: not visible or detached.',
+  );
+
+export const ElectronWaitForSelectorInputSchema = z.object({
+  sessionId: SessionIdSchema,
+  window: WindowRefSchema.optional(),
+  selector: z.string().min(1),
+  state: WaitForSelectorStateSchema.optional().default('visible'),
+  timeout: TimeoutSchema,
+});
+export type ElectronWaitForSelectorInput = z.infer<typeof ElectronWaitForSelectorInputSchema>;
+
+export const ElectronWaitForSelectorOutputSchema = z.object({
+  ok: z.literal(true),
+  sessionId: z.string(),
+  state: WaitForSelectorStateSchema,
+  matched: z.boolean(),
+});
+export type ElectronWaitForSelectorOutput = z.infer<typeof ElectronWaitForSelectorOutputSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Accessibility snapshot                                              */
+/* ------------------------------------------------------------------ */
+
+export const ElectronAccessibilitySnapshotInputSchema = z.object({
+  sessionId: SessionIdSchema,
+  window: WindowRefSchema.optional(),
+  interestingOnly: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe('Prune uninteresting nodes (Playwright default). false = full tree.'),
+  root: z
+    .string()
+    .optional()
+    .describe('Optional CSS selector. If set, snapshot is rooted at this element.'),
+  timeout: TimeoutSchema,
+});
+export type ElectronAccessibilitySnapshotInput = z.infer<
+  typeof ElectronAccessibilitySnapshotInputSchema
+>;
+
+export const AccessibilityNodeSchema: z.ZodType<AccessibilityNode> = z.lazy(() =>
+  z.object({
+    role: z.string(),
+    name: z.string().optional(),
+    value: z.union([z.string(), z.number()]).optional(),
+    description: z.string().optional(),
+    checked: z.union([z.boolean(), z.literal('mixed')]).optional(),
+    selected: z.boolean().optional(),
+    disabled: z.boolean().optional(),
+    expanded: z.boolean().optional(),
+    focused: z.boolean().optional(),
+    level: z.number().optional(),
+    children: z.array(AccessibilityNodeSchema).optional(),
+  }),
+);
+export interface AccessibilityNode {
+  role: string;
+  name?: string;
+  value?: string | number;
+  description?: string;
+  checked?: boolean | 'mixed';
+  selected?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  focused?: boolean;
+  level?: number;
+  children?: AccessibilityNode[];
+}
+
+export const ElectronAccessibilitySnapshotOutputSchema = z.object({
+  ok: z.literal(true),
+  sessionId: z.string(),
+  tree: AccessibilityNodeSchema.nullable(),
+});
+export type ElectronAccessibilitySnapshotOutput = z.infer<
+  typeof ElectronAccessibilitySnapshotOutputSchema
+>;
+
+/* ------------------------------------------------------------------ */
+/* Console tail                                                        */
+/* ------------------------------------------------------------------ */
+
+export const ConsoleEntrySchema = z.object({
+  ts: z.string().describe('ISO timestamp when the entry was captured.'),
+  kind: z.enum(['console', 'pageerror']),
+  level: z
+    .enum(['log', 'debug', 'info', 'warning', 'error', 'trace', 'dir', 'table', 'clear'])
+    .optional()
+    .describe('Playwright console-message type. Absent for pageerror.'),
+  text: z.string(),
+  windowIndex: z.number().int().nonnegative().optional(),
+  url: z.string().optional(),
+});
+export type ConsoleEntry = z.infer<typeof ConsoleEntrySchema>;
+
+export const ElectronConsoleTailInputSchema = z.object({
+  sessionId: SessionIdSchema,
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(1000)
+    .optional()
+    .default(100)
+    .describe('Max entries to return (most recent).'),
+  level: z
+    .array(z.enum(['log', 'debug', 'info', 'warning', 'error']))
+    .optional()
+    .describe('Filter by console level. Omit to include every level.'),
+  pattern: z
+    .string()
+    .optional()
+    .describe('Regex (string) to filter entries by text. Case-sensitive.'),
+  drain: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe('If true, clear the returned entries from the ring buffer.'),
+});
+export type ElectronConsoleTailInput = z.infer<typeof ElectronConsoleTailInputSchema>;
+
+export const ElectronConsoleTailOutputSchema = z.object({
+  ok: z.literal(true),
+  sessionId: z.string(),
+  entries: z.array(ConsoleEntrySchema),
+  dropped: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe('Count of entries evicted by the ring buffer since session start.'),
+  bufferSize: z.number().int().nonnegative(),
+});
+export type ElectronConsoleTailOutput = z.infer<typeof ElectronConsoleTailOutputSchema>;
+
+/* ------------------------------------------------------------------ */
 /* Main process                                                        */
 /* ------------------------------------------------------------------ */
 
