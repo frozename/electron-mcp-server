@@ -124,7 +124,7 @@ function errorResult(err: ElectronMcpError): CallToolResult {
 function normalizeZodOrElectron(err: unknown): ElectronMcpError {
   if (err instanceof ZodError) {
     return new ValidationError('Invalid tool input', {
-      issues: err.errors.map((e) => ({
+      issues: err.issues.map((e) => ({
         path: e.path.join('.'),
         message: e.message,
         code: e.code,

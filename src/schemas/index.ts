@@ -37,7 +37,7 @@ export const ElectronLaunchInputSchema = z.object({
     .describe('Command-line arguments passed to Electron'),
   cwd: z.string().optional().describe('Working directory for the launched process'),
   env: z
-    .record(z.string())
+    .record(z.string(), z.string())
     .optional()
     .describe('Environment variables merged with the current process env'),
   timeout: TimeoutSchema,
